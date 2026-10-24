@@ -1,0 +1,11 @@
+# NewPipeExtractor uses reflection (Rhino, nanojson) and ships no consumer rules.
+-keep class org.schabi.newpipe.extractor.** { *; }
+-keep class org.mozilla.javascript.** { *; }
+-keep class org.mozilla.classfile.ClassFileWriter
+-dontwarn org.mozilla.javascript.**
+-dontwarn org.mozilla.classfile.**
+-dontwarn java.beans.**
+-dontwarn javax.script.**
+-dontwarn jdk.dynalink.**
+-dontwarn com.google.re2j.**
+-dontwarn org.jsoup.**
