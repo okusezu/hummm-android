@@ -47,6 +47,13 @@ class Settings(context: Context) {
     val visualStyle: StateFlow<String> = _visualStyle.first.asStateFlow()
     fun setVisualStyle(name: String) = _visualStyle.second(name)
 
+    /** A Sonos speaker's IP address entered by hand, for networks where searching doesn't find them. */
+    private val _sonosHost = pref(prefs.getString("sonos_host", null)) {
+        prefs.edit().putString("sonos_host", it).apply()
+    }
+    val sonosHost: StateFlow<String?> = _sonosHost.first.asStateFlow()
+    fun setSonosHost(host: String?) = _sonosHost.second(host)
+
     /** Equalizer band levels in millibels, one per device band (empty = flat). */
     private val _eq = pref(prefs.getString("eq", "")!!.split(',').mapNotNull { it.toIntOrNull() }) {
         prefs.edit().putString("eq", it.joinToString(",")).apply()

@@ -44,7 +44,8 @@ import kotlinx.coroutines.launch
  * Background playback: ExoPlayer plus a MediaSession, which gives the
  * notification, lock-screen, Bluetooth and Android Auto controls (the phone's
  * equivalent of the desktop app's MPRIS service). While a Chromecast session
- * is up the session drives a CastPlayer instead, fed through [CastProxy].
+ * is up the session drives a CastPlayer instead, and while a Sonos group is
+ * chosen a [SonosPlayer]; both are fed through [CastProxy].
  */
 @OptIn(UnstableApi::class)
 class PlaybackService : MediaSessionService() {
@@ -52,6 +53,7 @@ class PlaybackService : MediaSessionService() {
     private var castPlayer: CastPlayer? = null
     /** [castPlayer] with Chromecast volume; this is what the session drives while casting. */
     private var castVolume: CastVolumePlayer? = null
+    private var sonos: SonosPlayer? = null
     private var proxy: CastProxy? = null
     private var castLocks: Pair<PowerManager.WakeLock, WifiManager.WifiLock>? = null
     /** Whichever player the session currently drives. */
@@ -107,6 +109,7 @@ class PlaybackService : MediaSessionService() {
         scope.launch { app.settings.eq.collect { applyEq(it) } }
         audioSessionChanged(exo.audioSessionId)
         setUpCast()
+        setUpSonos()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -118,6 +121,8 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         scope.cancel()
+        Sonos.disconnect()
+        sonos?.release()
         equalizer?.release()
         castVolume?.attach(null)
         castPlayer?.run {
@@ -136,27 +141,71 @@ class PlaybackService : MediaSessionService() {
 
     private fun setUpCast() {
         val app = HummmApp.instance
+        proxy = CastProxy(app.http, app.streams::castUrl, app.streams::invalidate)
         val cast = app.castContext ?: return
-        val relay = CastProxy(app.http, app.streams::castUrl, app.streams::invalidate)
-        proxy = relay
-        val converter = CastItemConverter { id -> CastProxy.lanAddress(this)?.let { relay.url(it, id) } }
+        val converter = CastItemConverter(::relayUrl)
         val castPlayer = CastPlayer(cast, converter).also { castPlayer = it }
         val withVolume = CastVolumePlayer(castPlayer).also { castVolume = it }
         castPlayer.addListener(listener)
         castPlayer.setSessionAvailabilityListener(object : SessionAvailabilityListener {
-            override fun onCastSessionAvailable() = switchTo(withVolume)
-            override fun onCastSessionUnavailable() = switchTo(exo)
+            override fun onCastSessionAvailable() {
+                switchTo(withVolume, castName())
+                Sonos.disconnect() // one speaker at a time
+            }
+
+            override fun onCastSessionUnavailable() {
+                if (player === withVolume) switchTo(exo, null)
+            }
         })
-        if (castPlayer.isCastSessionAvailable) switchTo(withVolume)
+        if (castPlayer.isCastSessionAvailable) switchTo(withVolume, castName())
     }
 
-    /** Moves the queue, position and play state onto [target] and hands it to the session. */
-    private fun switchTo(target: Player) {
+    private fun castName() =
+        HummmApp.instance.castContext?.sessionManager?.currentCastSession?.castDevice?.friendlyName ?: "Chromecast"
+
+    /** Where a Chromecast or Sonos speaker fetches [videoId] from, or null when the phone isn't on a LAN. */
+    private fun relayUrl(videoId: String): String? = CastProxy.lanAddress(this)?.let { proxy?.url(it, videoId) }
+
+    // ---- Sonos ---------------------------------------------------------------
+
+    private fun setUpSonos() {
+        scope.launch {
+            Sonos.target.collect { group ->
+                val old = sonos
+                if (group == null) {
+                    if (old != null && player === old) {
+                        switchTo(exo, null)
+                        if (Sonos.pauseOnReturn) exo.pause()
+                    }
+                    Sonos.pauseOnReturn = false
+                    old?.release()
+                    sonos = null
+                    return@collect
+                }
+                // A Chromecast hands over first; its session ending must not pull the queue back to the phone.
+                if (player === castVolume) {
+                    switchTo(exo, null)
+                    HummmApp.instance.castContext?.sessionManager?.endCurrentSession(true)
+                }
+                val next = SonosPlayer(SonosClient(HummmApp.instance.http, group.host, group.port), ::relayUrl, onLost = { reason ->
+                    PlayerErrors.report(reason)
+                    Sonos.disconnect(pause = true)
+                })
+                next.addListener(listener)
+                sonos = next
+                switchTo(next, group.name)
+                old?.release()
+            }
+        }
+    }
+
+    /** Moves the queue, position and play state onto [target] and hands it to the session; [name] is the speaker shown in the UI. */
+    private fun switchTo(target: Player, name: String?) {
         val from = player
         if (from === target) return
         if (target !== exo) {
             startRelay()
-            if (CastProxy.lanAddress(this) == null) PlayerErrors.report("Casting needs this phone on the same Wi-Fi as the Chromecast")
+            if (CastProxy.lanAddress(this) == null) PlayerErrors.report("Playing on $name needs this phone on the same Wi-Fi")
         }
         val items = (0 until from.mediaItemCount).map { from.getMediaItemAt(it) }
         val index = from.currentMediaItemIndex
@@ -172,11 +221,9 @@ class PlaybackService : MediaSessionService() {
             target.prepare()
         }
         if (target === exo) stopRelay()
-        castVolume?.attach(if (target === exo) null else HummmApp.instance.castContext?.sessionManager?.currentCastSession)
-        CastStatus.set(
-            if (target === exo) null
-            else HummmApp.instance.castContext?.sessionManager?.currentCastSession?.castDevice?.friendlyName ?: "Chromecast"
-        )
+        castVolume?.attach(if (target === castVolume) HummmApp.instance.castContext?.sessionManager?.currentCastSession else null)
+        CastStatus.stepVolume = (target as? SonosPlayer)?.let { it::stepVolume } ?: CastVolume::step
+        CastStatus.set(if (target === exo) null else name)
     }
 
     /** The phone must keep serving audio with the screen off while the Chromecast plays. */

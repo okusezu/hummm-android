@@ -35,7 +35,7 @@ class CastOptionsProvider : OptionsProvider {
     override fun getAdditionalSessionProviders(context: Context): List<SessionProvider>? = null
 }
 
-/** What the UI shows: the Cast device playing (null when playing on the phone) and its volume in %. */
+/** What the UI shows: the Chromecast or Sonos group playing (null when playing on the phone) and its volume in %. */
 object CastStatus {
     private val _device = MutableStateFlow<String?>(null)
     val device: StateFlow<String?> = _device.asStateFlow()
@@ -44,6 +44,10 @@ object CastStatus {
     private val _volume = MutableStateFlow<Int?>(null)
     val volume: StateFlow<Int?> = _volume.asStateFlow()
     internal fun setVolume(percent: Int?) { _volume.value = percent }
+
+    /** One volume key press on whatever is playing remotely (Chromecast or Sonos). */
+    var stepVolume: (Int) -> Unit = CastVolume::step
+        internal set
 }
 
 /**

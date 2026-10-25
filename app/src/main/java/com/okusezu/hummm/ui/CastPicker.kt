@@ -28,11 +28,21 @@ import androidx.mediarouter.media.MediaRouter
 import com.google.android.gms.cast.CastMediaControlIntent
 import com.okusezu.hummm.HummmApp
 import com.okusezu.hummm.playback.CastStatus
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.input.KeyboardType
+import com.okusezu.hummm.playback.Sonos
+import kotlinx.coroutines.launch
 
 /**
- * Chooses a Chromecast, drawn like a terminal pop-up. Selecting a route
- * starts a Cast session; the playback service notices and moves the queue
- * over. Phone speaker / Bluetooth outputs go through the system switcher.
+ * Chooses a Chromecast or Sonos group, drawn like a terminal pop-up. Selecting
+ * a Chromecast starts a Cast session and selecting a Sonos group sets
+ * [Sonos.target]; either way the playback service moves the queue over.
+ * Phone speaker / Bluetooth outputs go through the system switcher.
  */
 @Composable
 fun CastPicker(onDismiss: () -> Unit) {
@@ -60,17 +70,25 @@ fun CastPicker(onDismiss: () -> Unit) {
         onDispose { router.removeCallback(callback) }
     }
 
+    val sonosGroups by Sonos.groups.collectAsState()
+    val sonosScanning by Sonos.scanning.collectAsState()
+    val sonosTarget by Sonos.target.collectAsState()
+    LaunchedEffect(Unit) { Sonos.scan(context) }
+    var addingSonos by remember { mutableStateOf(false) }
+
     val dim = MaterialTheme.colorScheme.onSurfaceVariant
     Dialog(onDismissRequest = onDismiss) {
         Column(
             Modifier.fillMaxWidth()
                 .background(MaterialTheme.colorScheme.background)
                 .border(1.dp, MaterialTheme.colorScheme.outline)
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text("Cast", fontWeight = FontWeight.Bold)
             Text("────", color = dim)
+            Text("chromecast", color = dim)
             when {
                 cast == null -> Text("Chromecast needs Google Play services, which this phone doesn't have.", color = dim)
                 routes.isEmpty() -> {
@@ -78,28 +96,78 @@ fun CastPicker(onDismiss: () -> Unit) {
                     Text("The Chromecast must be on the same Wi-Fi as this phone.", color = dim, style = MaterialTheme.typography.bodySmall)
                 }
                 else -> routes.forEach { route ->
-                    val selected = route.isSelected
-                    Text(
-                        (if (selected) "▶︎ " else "  ") + route.name + if (selected) "  (casting)" else "",
-                        Modifier.fillMaxWidth().clickable {
-                            if (!selected) route.select()
-                            onDismiss()
-                        }.padding(vertical = 8.dp),
-                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        fontWeight = if (selected) FontWeight.Bold else null,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    )
+                    Choice(route.name, route.isSelected) {
+                        if (!route.isSelected) route.select()
+                        onDismiss()
+                    }
                 }
             }
             Text("")
-            if (casting != null && cast != null) {
-                PickerAction("stop casting") { cast.sessionManager.endCurrentSession(true); onDismiss() }
+            Text("sonos", color = dim)
+            sonosGroups.forEach { g ->
+                Choice(g.name, sonosTarget?.id == g.id) {
+                    if (sonosTarget?.id != g.id) Sonos.connect(g)
+                    onDismiss()
+                }
+            }
+            when {
+                sonosScanning && sonosGroups.isEmpty() -> Spinner(label = "looking for speakers…")
+                sonosGroups.isEmpty() -> Text("no speakers found on this Wi-Fi", color = dim, style = MaterialTheme.typography.bodySmall)
+            }
+            if (addingSonos) AddSonos(onDone = { addingSonos = false })
+            else PickerAction("add a speaker by IP address") { addingSonos = true }
+            Text("")
+            if (casting != null) {
+                PickerAction("stop casting") {
+                    if (sonosTarget != null) Sonos.disconnect() else cast?.sessionManager?.endCurrentSession(true)
+                    onDismiss()
+                }
             }
             PickerAction("phone & bluetooth outputs") {
                 SystemOutputSwitcherDialogController.showDialog(context)
                 onDismiss()
             }
             PickerAction("close", onDismiss)
+        }
+    }
+}
+
+/** A device to play on; ▶︎ marks the one in use. */
+@Composable
+private fun Choice(name: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        (if (selected) "▶︎ " else "  ") + name + if (selected) "  (casting)" else "",
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+        fontWeight = if (selected) FontWeight.Bold else null,
+        maxLines = 1, overflow = TextOverflow.Ellipsis,
+    )
+}
+
+/** For networks that hide speakers from searches: the IP is in the Sonos app under Settings → About My System. */
+@Composable
+private fun AddSonos(onDone: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var address by remember { mutableStateOf(HummmApp.instance.settings.sonosHost.value.orEmpty()) }
+    var busy by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    OutlinedTextField(
+        address, { address = it; failed = false }, Modifier.fillMaxWidth(),
+        label = { Text("speaker IP, e.g. 192.168.1.40") }, singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+    )
+    Text(
+        "The Sonos app shows it, usually under Settings → System → About My System.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
+    )
+    if (failed) Text("No Sonos speaker answered at that address.", color = MaterialTheme.colorScheme.error)
+    if (busy) Spinner(label = "trying…")
+    else PickerAction("add") {
+        busy = true
+        scope.launch {
+            val ok = Sonos.addByAddress(address)
+            busy = false
+            if (ok) onDone() else failed = true
         }
     }
 }

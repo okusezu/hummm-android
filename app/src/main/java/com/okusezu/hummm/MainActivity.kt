@@ -32,7 +32,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import com.okusezu.hummm.playback.CastStatus
-import com.okusezu.hummm.playback.CastVolume
 import com.okusezu.hummm.playback.PlayerErrors
 import com.okusezu.hummm.ui.AppViewModel
 import com.okusezu.hummm.ui.DetailScreen
@@ -65,12 +64,12 @@ class MainActivity : ComponentActivity() {
         setContent { HummmTheme { App(vm) } }
     }
 
-    // While casting, the volume keys set the Chromecast's volume. The media
-    // session already routes them there; this covers Android versions that don't.
+    // While casting, the volume keys set the Chromecast's or Sonos group's volume.
+    // The media session already routes them there; this covers Android versions that don't.
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (CastStatus.device.value != null) when (keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP -> { CastVolume.step(1); return true }
-            KeyEvent.KEYCODE_VOLUME_DOWN -> { CastVolume.step(-1); return true }
+            KeyEvent.KEYCODE_VOLUME_UP -> { CastStatus.stepVolume(1); return true }
+            KeyEvent.KEYCODE_VOLUME_DOWN -> { CastStatus.stepVolume(-1); return true }
         }
         return super.onKeyDown(keyCode, event)
     }
