@@ -21,6 +21,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.okusezu.hummm.HummmApp
 import com.okusezu.hummm.MainActivity
 import com.okusezu.hummm.playback.PlaybackService
+import com.okusezu.hummm.playback.Spectrum
 import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
@@ -60,6 +61,10 @@ class ScreenshotTest {
         rule.waitForIdle()
         Thread.sleep(1500) // let artwork arrive
         rule.waitForIdle()
+        capture(name)
+    }
+
+    private fun capture(name: String) {
         val view = activity.window.decorView
         val bmp = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
         view.draw(android.graphics.Canvas(bmp))
@@ -111,6 +116,16 @@ class ScreenshotTest {
         activity.viewModels().loadLyrics()
         await { activity.viewModels().lyrics is Load.Ok }
         shot("07_lyrics")
+        activity.viewModels().playerPage = PlayerPage.NOW_PLAYING
+        withFakeAudio {
+            // The visualiser redraws every frame, so Compose never idles: step the clock by hand.
+            rule.mainClock.autoAdvance = false
+            activity.viewModels().visualiser = true
+            repeat(120) { rule.mainClock.advanceTimeBy(16); shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(16) }
+            capture("07b_visualiser")
+            activity.viewModels().visualiser = false
+            rule.mainClock.autoAdvance = true
+        }
         activity.viewModels().playerOpen = false
 
         rule.onAllNodesWithText("vibe").onFirst().performClick()
@@ -122,6 +137,37 @@ class ScreenshotTest {
         shot("09_library")
         activity.viewModels().push(Route.Settings)
         shot("10_settings")
+    }
+
+    /** Robolectric decodes nothing, so feed Spectrum a drum-and-chords loop in real time. */
+    private fun withFakeAudio(block: () -> Unit) {
+        val rate = 48_000
+        Spectrum.flush(rate, 2, androidx.media3.common.C.ENCODING_PCM_16BIT)
+        var running = true
+        val feeder = Thread {
+            var t = 0L
+            val chunk = rate / 100
+            while (running) {
+                val buf = java.nio.ByteBuffer.allocate(chunk * 4).order(java.nio.ByteOrder.nativeOrder())
+                repeat(chunk) {
+                    val s = t.toDouble() / rate
+                    val beat = s % 0.5
+                    val kick = kotlin.math.exp(-beat * 18) * kotlin.math.sin(2 * Math.PI * (55 + 60 * kotlin.math.exp(-beat * 30)) * s)
+                    val chord = listOf(220.0, 277.2, 329.6, 440.0, 1318.5, 2637.0).withIndex()
+                        .sumOf { (i, f) -> 0.12 / (i + 1) * kotlin.math.sin(2 * Math.PI * f * s) }
+                    val hat = if (s % 0.25 < 0.03) (Math.random() - 0.5) * 0.25 else 0.0
+                    val l = (0.6 * kick + chord + hat).coerceIn(-1.0, 1.0)
+                    val r = (0.6 * kick + 0.8 * chord + 1.3 * hat).coerceIn(-1.0, 1.0)
+                    buf.putShort((l * 32000).toInt().toShort()).putShort((r * 32000).toInt().toShort())
+                    t++
+                }
+                buf.flip()
+                Spectrum.handleBuffer(buf)
+                Thread.sleep(10)
+            }
+        }
+        feeder.start()
+        try { block() } finally { running = false; feeder.join() }
     }
 
     private fun MainActivity.viewModels(): AppViewModel =

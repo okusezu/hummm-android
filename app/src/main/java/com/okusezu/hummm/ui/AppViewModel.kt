@@ -73,6 +73,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val stack = mutableStateListOf<Route>()
     var playerOpen by mutableStateOf(false)
     var playerPage by mutableStateOf(PlayerPage.NOW_PLAYING)
+    var visualiser by mutableStateOf(false)
     /** Queue row highlighted for the mode-bar actions (the desktop's cursor), if any. */
     var queueCursor by mutableStateOf<Int?>(null)
     /** Lyrics keep the current line centred until the user scrolls them. */
@@ -88,6 +89,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Returns false when there was nothing to go back from. */
     fun back(): Boolean = when {
+        playerOpen && visualiser -> { visualiser = false; true }
         playerOpen && queueCursor != null -> { queueCursor = null; true }
         playerOpen && playerPage != PlayerPage.NOW_PLAYING -> { playerPage = PlayerPage.NOW_PLAYING; true }
         playerOpen -> { playerOpen = false; true }

@@ -1,6 +1,8 @@
 package com.okusezu.hummm.ui
 
-import android.graphics.Bitmap
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -53,7 +55,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -65,11 +66,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.graphics.drawable.toBitmap
 import androidx.media3.common.Player
-import coil.imageLoader
-import coil.request.ImageRequest
-import coil.request.SuccessResult
+import coil.compose.AsyncImage
 import com.okusezu.hummm.data.Track
 import com.okusezu.hummm.playback.CastStatus
 import kotlin.math.PI
@@ -80,8 +78,8 @@ import kotlin.math.sin
 /*
  * The full-screen player, drawn the way the desktop app draws its main
  * screen: header with the braille wave, the now-playing block (title —
- * artist / album • time / wave bar / ↺ ⇄ ▶ ♡, with optional half-block
- * cover art), a panel underneath (queue preview, queue or lyrics) and a row
+ * artist / album • time / wave bar / ↺ ⇄ « ▶ » ♡, with optional
+ * full-resolution cover art), a panel underneath (queue preview, queue or lyrics) and a row
  * of [ cast ] [ art ] [ lyrics ] buttons where the desktop has its mode bar.
  * Characters, spacing and dim/bold/accent styling follow hummm/app.py.
  */
@@ -129,6 +127,7 @@ private fun amWave(frame: Int, live: Boolean): String {
 fun PlayerSheet(vm: AppViewModel) {
     val live = vm.current != null && vm.isPlaying
     val frame = rememberFrame(live)
+    if (vm.visualiser) return Visualiser(onClose = { vm.visualiser = false })
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             HeaderBar(frame, live)
@@ -184,7 +183,7 @@ private fun ArtLayout(vm: AppViewModel, t: Track, frame: Int) {
             .pointerInput(Unit) { detectVerticalDragGestures { _, drag -> if (drag > 40) vm.playerOpen = false } },
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        HalfBlockArt(t.thumbnail, Modifier.width(cellWidth() * ART_CELLS))
+        CoverArt(t.thumbnail, Modifier.width(cellWidth() * ART_CELLS))
         Spacer(Modifier.width(cellWidth() * 3))
         Column(Modifier.weight(1f)) {
             Text(t.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -195,7 +194,7 @@ private fun ArtLayout(vm: AppViewModel, t: Track, frame: Int) {
             Text("")
             WaveBar(vm, frame)
             Text("")
-            Controls(vm)
+            Controls(vm, Modifier.fillMaxWidth(), spread = true)
         }
     }
 }
@@ -217,32 +216,14 @@ private fun timeLine(vm: AppViewModel, t: Track) =
     "${fmtTime(vm.positionMs)} / ${fmtTime(vm.durationMs.takeIf { it > 0 } ?: t.duration * 1000L)}" +
         if (vm.buffering) "  buffering…" else ""
 
-/**
- * The cover as the desktop renders it: each character cell is "▀" with the
- * top pixel as foreground and the bottom one as background, so the image is
- * ART_CELLS × ART_CELLS square blocks. Drawn directly as blocks here.
- */
+/** The cover at full resolution, square-cornered like everything else; a dim block until it loads. */
 @Composable
-private fun HalfBlockArt(url: String, modifier: Modifier) {
-    val context = LocalContext.current
-    var pixels by remember(url) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(url) {
-        if (url.isEmpty()) return@LaunchedEffect
-        val req = ImageRequest.Builder(context).data(url).allowHardware(false).build()
-        val img = (context.imageLoader.execute(req) as? SuccessResult)?.drawable?.toBitmap() ?: return@LaunchedEffect
-        pixels = Bitmap.createScaledBitmap(img, ART_CELLS, ART_CELLS, true)
-    }
-    val empty = MaterialTheme.colorScheme.surfaceVariant
-    BoxWithConstraints(modifier) {
-        Canvas(Modifier.size(maxWidth, maxWidth)) {
-            val px = size.width / ART_CELLS
-            val bmp = pixels
-            for (y in 0 until ART_CELLS) for (x in 0 until ART_CELLS) {
-                val c = if (bmp != null) Color(bmp.getPixel(x, y)) else empty
-                // +0.5 overlaps neighbours so no hairline gaps show between blocks.
-                drawRect(c, Offset(x * px, y * px), Size(px + 0.5f, px + 0.5f))
-            }
-        }
+private fun CoverArt(url: String, modifier: Modifier) {
+    Box(modifier.aspectRatio(1f).background(MaterialTheme.colorScheme.surfaceVariant)) {
+        if (url.isNotEmpty()) AsyncImage(
+            model = url, contentDescription = null, contentScale = ContentScale.Crop,
+            filterQuality = FilterQuality.High, modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 
@@ -356,20 +337,23 @@ private fun WaveBar(vm: AppViewModel, frame: Int) {
     }
 }
 
-/** Desktop _controls(): ↺ (↺¹)   ⇄   ▶/‖   ♡/♥, each tappable (‖ for ⏸, which phones draw as an emoji). */
+/** Desktop _controls() plus prev/next: ↺ (↺¹)  ⇄  «  ▶/‖  »  ♡/♥, each tappable (‖ for ⏸ and « » for ⏮ ⏭, which phones draw as emoji). */
 @Composable
-private fun Controls(vm: AppViewModel) {
+private fun Controls(vm: AppViewModel, modifier: Modifier = Modifier, spread: Boolean = false) {
     val accent = MaterialTheme.colorScheme.primary
     val dim = MaterialTheme.colorScheme.onSurfaceVariant
     val shuffle by vm.shuffle.collectAsState()
     val t = vm.current
     val liked = t != null && t.videoId in vm.likedIds
-    val gap = cellWidth() * 3
-    Row(horizontalArrangement = Arrangement.spacedBy(gap), verticalAlignment = Alignment.CenterVertically) {
+    val gap = cellWidth() * 2
+    // spread: fill a narrow column (beside the cover) instead of fixed two-cell gaps.
+    Row(modifier, horizontalArrangement = if (spread) Arrangement.SpaceBetween else Arrangement.spacedBy(gap), verticalAlignment = Alignment.CenterVertically) {
         val repeatOn = vm.repeatMode != Player.REPEAT_MODE_OFF
         Glyph(if (vm.repeatMode == Player.REPEAT_MODE_ONE) "↺¹" else "↺", if (repeatOn) accent else dim, repeatOn, vm::cycleRepeat)
         Glyph("⇄", if (shuffle) accent else dim, shuffle, vm::toggleShuffle)
+        Glyph("«", MaterialTheme.colorScheme.onSurface, true, vm::previous)
         Glyph(if (vm.isPlaying) "‖" else "▶︎", MaterialTheme.colorScheme.onSurface, true, vm::togglePlay)
+        Glyph("»", MaterialTheme.colorScheme.onSurface, true, vm::next)
         Glyph(if (liked) "♥" else "♡", if (liked) Color(0xFFE5484D) else dim, liked) { vm.toggleLike() }
     }
 }
@@ -434,7 +418,7 @@ private fun QueuePanel(vm: AppViewModel) {
     var saving by remember { mutableStateOf(false) }
     var adding by remember { mutableStateOf<List<Track>?>(null) }
     fun needsAccount(block: () -> Unit) = { if (vm.music.authed) block() else vm.say("That needs sign-in. Open Library → Settings") }
-    Column(Modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 4.dp)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 8.dp)) {
         PanelTitle(
             "Queue", if (vm.queue.isEmpty()) "" else "${vm.queue.size} songs",
             actions = listOf("clear" to vm::clearUpcoming, "save" to needsAccount { saving = true }, "close" to { vm.playerPage = PlayerPage.NOW_PLAYING }),
@@ -466,7 +450,8 @@ private fun QueuePanel(vm: AppViewModel) {
                             onClick = { vm.queueCursor = null; vm.jumpTo(i) },
                             onLongClick = { vm.queueCursor = if (vm.queueCursor == i) null else i },
                         )
-                        .padding(vertical = 5.dp),
+                        .padding(horizontal = 6.dp, vertical = 7.dp),
+                    style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -475,7 +460,7 @@ private fun QueuePanel(vm: AppViewModel) {
         val cursor = vm.queueCursor?.takeIf { it in vm.queue.indices }
         if (cursor != null) {
             HorizontalDivider()
-            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 TermActions(listOf(
                     "remove" to { vm.removeAt(cursor); vm.queueCursor = cursor.coerceAtMost(vm.queue.size - 2).takeIf { it >= 0 } },
                     "up" to { if (cursor > 0) { vm.move(cursor, cursor - 1); vm.queueCursor = cursor - 1 } },
@@ -485,7 +470,7 @@ private fun QueuePanel(vm: AppViewModel) {
                 ))
             }
         } else {
-            Text("tap to play · hold a song to edit it", Modifier.padding(vertical = 4.dp), color = dim, style = MaterialTheme.typography.bodySmall)
+            Text("tap to play · hold a song to edit it", Modifier.padding(top = 8.dp, bottom = 2.dp), color = dim, style = MaterialTheme.typography.bodySmall)
         }
     }
     if (saving) SaveQueueDialog(onSave = { vm.savePlaylist(it, vm.queue) }, onDismiss = { saving = false })
@@ -555,7 +540,7 @@ private fun LyricsPanel(vm: AppViewModel) {
 
 /**
  * The desktop's mode bar as a grid of buttons:
- * prev · next · radio · queue / lyrics · art · cast · eq.
+ * radio · queue · lyrics · visual / art · cast · eq (prev/next live in Controls).
  * The open panel, the art toggle and an active Cast session show in reverse video.
  */
 @Composable
@@ -566,13 +551,12 @@ private fun ActionBar(vm: AppViewModel) {
     fun toggle(page: PlayerPage) { vm.playerPage = if (vm.playerPage == page) PlayerPage.NOW_PLAYING else page }
     val rows = listOf(
         listOf(
-            Triple("prev", false, vm::previous),
-            Triple("next", false, vm::next),
             Triple("radio", false, { vm.radio() }),
             Triple("queue", vm.playerPage == PlayerPage.QUEUE, { toggle(PlayerPage.QUEUE) }),
+            Triple("lyrics", vm.playerPage == PlayerPage.LYRICS, { toggle(PlayerPage.LYRICS) }),
+            Triple("visual", false, { vm.visualiser = true }),
         ),
         listOf(
-            Triple("lyrics", vm.playerPage == PlayerPage.LYRICS, { toggle(PlayerPage.LYRICS) }),
             Triple("art", art, { vm.settings.setArt(!art) }),
             Triple("cast", casting != null, { picking = true }),
             Triple("eq", false, { vm.playerOpen = false; vm.push(Route.Equalizer) }),
