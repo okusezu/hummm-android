@@ -121,8 +121,14 @@ class ScreenshotTest {
             // The visualiser redraws every frame, so Compose never idles: step the clock by hand.
             rule.mainClock.autoAdvance = false
             activity.viewModels().visualiser = true
-            repeat(120) { rule.mainClock.advanceTimeBy(16); shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(16) }
-            capture("07b_visualiser")
+            val settings = com.okusezu.hummm.HummmApp.instance.settings
+            val before = settings.visualStyle.value
+            for (style in VisStyle.entries) {
+                settings.setVisualStyle(style.label)
+                repeat(120) { rule.mainClock.advanceTimeBy(16); shadowOf(android.os.Looper.getMainLooper()).idle(); Thread.sleep(16) }
+                capture("07b_visualiser_${style.ordinal + 1}_${style.label}")
+            }
+            settings.setVisualStyle(before)
             activity.viewModels().visualiser = false
             rule.mainClock.autoAdvance = true
         }

@@ -4,13 +4,14 @@ import android.app.Activity
 import android.content.ContextWrapper
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -18,6 +19,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,8 +27,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -35,25 +38,35 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import coil.compose.AsyncImage
+import com.okusezu.hummm.HummmApp
 import com.okusezu.hummm.playback.CastStatus
 import com.okusezu.hummm.playback.Spectrum
 import kotlinx.coroutines.delay
-import kotlin.math.roundToInt
+import kotlin.math.abs
 
 /**
- * Full-screen cava: stereo by default like cava's config, so the left channel
- * runs bass-in-the-middle out to the left edge and the right channel mirrors it.
- * Bars are two cells wide with a one-cell gap and grow in eighths of a cell,
- * exactly as cava's ▁▂▃▄▅▆▇█ stack in a terminal. Tap or go back to close.
+ * Full-screen visualiser in the style of cava in a terminal. Swipe left or
+ * right to change style (see [VisStyle]; the last one is remembered), tap or
+ * go back to close.
  */
 @Composable
-fun Visualiser(onClose: () -> Unit) {
-    val accent = MaterialTheme.colorScheme.primary
-    val dim = MaterialTheme.colorScheme.onSurfaceVariant
+fun Visualiser(artUrl: String, onClose: () -> Unit) {
+    val settings = HummmApp.instance.settings
+    val style = VisStyle.named(settings.visualStyle.collectAsState().value)
+    val art by settings.art.collectAsState()
+    val colors = VisColors(
+        MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.onSurface,
+    )
     val casting by CastStatus.device.collectAsState()
-    val cell = rememberTextMeasurer().measure("█", MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)).size
-    var hint by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) { delay(2500); hint = false }
+    val text = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)
+    val measurer = rememberTextMeasurer()
+    val cell = remember(measurer) { measurer.measure("█", text).size }
+    val glyphs = remember(measurer) { Glyphs(measurer, text) }
+    // The style's name shows briefly when it changes; the first time, how to use the screen.
+    var label by remember { mutableStateOf<String?>("swipe for styles · tap to close") }
+    var labelShown by remember { mutableIntStateOf(0) }
+    LaunchedEffect(labelShown) { delay(if (labelShown == 0) 2500 else 1500); label = null }
     ImmersiveWhileShown()
     DisposableEffect(Unit) {
         Spectrum.listening = true
@@ -63,66 +76,57 @@ fun Visualiser(onClose: () -> Unit) {
     BoxWithConstraints(
         Modifier.fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onClose)
+            .pointerInput(Unit) { detectTapGestures(onTap = { onClose() }) }
+            .pointerInput(Unit) {
+                var dragged = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { dragged = 0f },
+                    onDragEnd = {
+                        if (abs(dragged) > 48.dp.toPx()) {
+                            val next = VisStyle.named(settings.visualStyle.value).next(if (dragged < 0) 1 else -1)
+                            settings.setVisualStyle(next.label)
+                            label = "◂ ${next.label} ▸   ${next.ordinal + 1}/${VisStyle.entries.size}"
+                            labelShown++
+                        }
+                    },
+                ) { change, amount -> change.consume(); dragged += amount }
+            }
     ) {
-        val px = with(LocalDensity.current) { constraints.maxWidth to constraints.maxHeight }
-        val cols = px.first / cell.width
-        val rows = px.second / cell.height
-        // bar_width 2, bar_spacing 1, an even number so the halves mirror.
-        val perSide = ((cols + 1) / 3 / 2).coerceAtLeast(1)
-        val state = remember(perSide) { CavaState(perSide) }
+        val grid = remember(constraints.maxWidth, constraints.maxHeight, cell) {
+            Grid(cell.width.toFloat(), cell.height.toFloat(), constraints.maxWidth, constraints.maxHeight)
+        }
+        val audio = remember { AudioFrame() }
+        val scene = remember(style, grid) { scene(style, grid, glyphs) }
         var tick by remember { mutableLongStateOf(0L) }
-        LaunchedEffect(state) {
+        LaunchedEffect(scene) {
             var last = 0L
             while (true) withFrameNanos { now ->
                 val dt = if (last == 0L) 1f / 60 else (now - last) / 1e9f
                 last = now
-                state.step(dt)
+                audio.read()
+                scene.step(dt, audio)
                 tick = now
             }
         }
         Canvas(Modifier.fillMaxSize()) {
             tick // redraw every frame
-            val bars = perSide * 2
-            val used = bars * 3 - 1
-            val x0 = (cols - used) / 2 * cell.width.toFloat() + (px.first % cell.width) / 2f
-            val bottom = rows * cell.height + (px.second % cell.height) / 2f
-            for (b in 0 until bars) {
-                // Left half reversed: bass meets in the middle.
-                val v = if (b < perSide) state.heights[perSide - 1 - b] else state.heights[b]
-                val eighths = (v * rows * 8).roundToInt()
-                if (eighths == 0) continue
-                val h = eighths * cell.height / 8f
-                drawRect(accent, Offset(x0 + b * 3 * cell.width, bottom - h), Size(2f * cell.width, h))
-            }
+            with(scene) { draw(colors) }
+        }
+        if (style == VisStyle.CIRCLE && art && artUrl.isNotEmpty()) {
+            val d = with(LocalDensity.current) { (circleRadius(grid.w, grid.h) * 2 * 0.86f).toDp() }
+            AsyncImage(
+                model = artUrl, contentDescription = null, contentScale = ContentScale.Crop,
+                modifier = Modifier.align(Alignment.Center).size(d).clip(CircleShape),
+            )
         }
         val note = when {
             casting != null -> "casting — the visualiser needs audio playing on this phone"
-            hint -> "tap to close"
-            else -> null
+            else -> label
         }
         if (note != null) Text(
             note, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp),
-            color = dim, style = MaterialTheme.typography.bodySmall,
+            color = colors.dim, style = MaterialTheme.typography.bodySmall,
         )
-    }
-}
-
-/** Bars per side; left channel first, then right. */
-private class CavaState(val perSide: Int) {
-    val heights = FloatArray(perSide * 2)
-    private var cava: Cava? = null
-    private var l = FloatArray(0)
-    private var r = FloatArray(0)
-
-    fun step(dt: Float) {
-        val rate = Spectrum.sampleRate
-        val c = cava?.takeIf { it.rate == rate } ?: Cava(perSide, rate).also { cava = it; l = FloatArray(it.size); r = FloatArray(it.size) }
-        if (Spectrum.read(l, r)) {
-            c.spectrum(l, heights, 0)
-            c.spectrum(r, heights, perSide)
-        } else heights.fill(0f)
-        c.smooth(heights, dt)
     }
 }
 

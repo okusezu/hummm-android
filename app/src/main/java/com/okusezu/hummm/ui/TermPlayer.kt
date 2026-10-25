@@ -127,7 +127,7 @@ private fun amWave(frame: Int, live: Boolean): String {
 fun PlayerSheet(vm: AppViewModel) {
     val live = vm.current != null && vm.isPlaying
     val frame = rememberFrame(live)
-    if (vm.visualiser) return Visualiser(onClose = { vm.visualiser = false })
+    if (vm.visualiser) return Visualiser(artUrl = vm.current?.thumbnail.orEmpty(), onClose = { vm.visualiser = false })
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
             HeaderBar(frame, live)

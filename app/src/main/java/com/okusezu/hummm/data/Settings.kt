@@ -40,6 +40,13 @@ class Settings(context: Context) {
     val art: StateFlow<Boolean> = _art.first.asStateFlow()
     fun setArt(on: Boolean) = _art.second(on)
 
+    /** The visualiser style last swiped to (a VisStyle name). */
+    private val _visualStyle = pref(prefs.getString("visual_style", "cava")!!) {
+        prefs.edit().putString("visual_style", it).apply()
+    }
+    val visualStyle: StateFlow<String> = _visualStyle.first.asStateFlow()
+    fun setVisualStyle(name: String) = _visualStyle.second(name)
+
     /** Equalizer band levels in millibels, one per device band (empty = flat). */
     private val _eq = pref(prefs.getString("eq", "")!!.split(',').mapNotNull { it.toIntOrNull() }) {
         prefs.edit().putString("eq", it.joinToString(",")).apply()
