@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sonos speakers only speak plain HTTP (UPnP/SOAP on port 1400), and Android
+  blocks cleartext traffic by default, which silently hid every speaker.
+  Speakers are found by IP address, which a domain-config can't match, so
+  cleartext is allowed app-wide; everything else hummm talks to is HTTPS.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
