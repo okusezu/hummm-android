@@ -38,7 +38,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Background playback: ExoPlayer plus a MediaSession, which gives the
@@ -245,6 +247,37 @@ class PlaybackService : MediaSessionService() {
     }
 
     private val callback = object : MediaSession.Callback {
+        // A voice assistant's "play X on hummm" arrives as one item with only a search query.
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val search = mediaItems.singleOrNull()?.takeIf { it.mediaId.isEmpty() }?.requestMetadata
+                ?: return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
+            val request = VoiceSearch.request(search.searchQuery, search.extras)
+            // "Play music" with something already queued just carries on.
+            if (request.text.isEmpty() && player.mediaItemCount > 0) {
+                val queue = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
+                return Futures.immediateFuture(
+                    MediaSession.MediaItemsWithStartPosition(queue, player.currentMediaItemIndex, player.currentPosition)
+                )
+            }
+            return scope.future {
+                val tracks = withContext(Dispatchers.IO) {
+                    runCatching { VoiceSearch.tracks(HummmApp.instance.music, request) }.getOrDefault(emptyList())
+                }
+                if (tracks.isEmpty()) {
+                    PlayerErrors.report("Nothing found for “${request.text}”")
+                    error("no results for ${request.text}")
+                }
+                QueueState.unshuffled = null
+                MediaSession.MediaItemsWithStartPosition(tracks.map { it.toMediaItem() }, 0, 0)
+            }
+        }
+
         // Controllers can't send URIs, only ids; rebuild playable items here.
         override fun onAddMediaItems(
             mediaSession: MediaSession,

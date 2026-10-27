@@ -1,6 +1,8 @@
 package com.okusezu.hummm
 
 import android.Manifest
+import android.content.Intent
+import android.provider.MediaStore
 import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
@@ -33,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import com.okusezu.hummm.playback.CastStatus
 import com.okusezu.hummm.playback.PlayerErrors
+import com.okusezu.hummm.playback.VoiceSearch
 import com.okusezu.hummm.ui.AppViewModel
 import com.okusezu.hummm.ui.DetailScreen
 import com.okusezu.hummm.ui.EqualizerScreen
@@ -62,6 +65,18 @@ class MainActivity : ComponentActivity() {
                 .launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         setContent { HummmTheme { App(vm) } }
+        if (savedInstanceState == null) handle(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handle(intent)
+    }
+
+    private fun handle(intent: Intent) {
+        if (intent.action == MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH) {
+            vm.playFromSearch(intent.getStringExtra(VoiceSearch.QUERY), intent.extras)
+        }
     }
 
     // While casting, the volume keys set the Chromecast's or Sonos group's volume.

@@ -8,6 +8,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.os.Bundle
+import androidx.compose.runtime.snapshotFlow
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
@@ -38,6 +40,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -190,6 +194,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ---- playback actions -----------------------------------------------------
     private inline fun withPlayer(block: (MediaController) -> Unit) {
         controller?.let(block) ?: say("The player is still starting…")
+    }
+
+    /** A voice request; the service resolves it (see VoiceSearch), so this may run before the player connects. */
+    fun playFromSearch(query: String?, extras: Bundle?) {
+        val search = MediaItem.RequestMetadata.Builder().setSearchQuery(query.orEmpty()).setExtras(extras).build()
+        viewModelScope.launch {
+            val c = snapshotFlow { controller }.filterNotNull().first()
+            if (!query.isNullOrBlank()) say("Searching “$query”…")
+            c.setMediaItem(MediaItem.Builder().setRequestMetadata(search).build())
+            c.prepare()
+            c.play()
+        }
     }
 
     fun playList(tracks: List<Track>, start: Int = 0) = withPlayer { it.playTracks(tracks, start) }
